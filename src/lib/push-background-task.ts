@@ -192,9 +192,12 @@ export function parseRelayPushData(data: unknown): RelayPushData {
   } else if (d.changed && typeof d.changed === 'object' && !Array.isArray(d.changed)) {
     out.changed = d.changed as Record<string, Record<string, string>>;
   }
-  // Older relays only sent `changed`; the account id is its first key.
-  if (!out.jmapAccountId && out.changed) {
-    out.jmapAccountId = Object.keys(out.changed)[0] ?? null;
+  // Older relays only sent `changed`; the account id is its first key. A map
+  // of several accounts (the direct connection's, a login with shared ones)
+  // names no one account, so a push with a label goes by the label.
+  const changedAccounts = out.changed ? Object.keys(out.changed) : [];
+  if (!out.jmapAccountId && (changedAccounts.length === 1 || !out.accountLabel)) {
+    out.jmapAccountId = changedAccounts[0] ?? null;
   }
   return out;
 }

@@ -54,6 +54,14 @@ describe('parseRelayPushData', () => {
     expect(parsed.emailIds).toEqual([]);
   });
 
+  it('takes no account id from a labelled `changed` map of several accounts', () => {
+    const changed = JSON.stringify({ shared: { Email: 'x' }, a9: { Email: 'y' } });
+    expect(parseRelayPushData({ kind: 'jmap-state-change', accountLabel: 'alice', changed }).jmapAccountId).toBeNull();
+    // Without a label, or with an account id, as before.
+    expect(parseRelayPushData({ kind: 'jmap-state-change', changed }).jmapAccountId).toBe('shared');
+    expect(parseRelayPushData({ accountId: 'a9', accountLabel: 'alice', changed }).jmapAccountId).toBe('a9');
+  });
+
   it('tolerates garbage', () => {
     expect(parseRelayPushData(null).emailIds).toEqual([]);
     expect(parseRelayPushData({ emailIds: '{not json' }).emailIds).toEqual([]);
@@ -93,6 +101,17 @@ describe('matchAccountsForPush', () => {
   it('checks every account when nothing matches', () => {
     const payload = parseRelayPushData({ accountId: 'unknown', accountLabel: 'carol' });
     expect(matchAccountsForPush(payload, accounts, {}, registry)).toEqual({ accountIds: accounts, ambiguous: false });
+  });
+
+  it("takes a push for a login's own and shared accounts for that login, not for another whose id a shared one carries", () => {
+    // bob's login reads a shared account whose id is alice's own.
+    const payload = parseRelayPushData({
+      kind: 'jmap-state-change',
+      accountLabel: 'bob',
+      changed: JSON.stringify({ ja: { Email: 's1' }, jb: { Email: 's2' } }),
+    });
+    expect(matchAccountsForPush(payload, ['alice@x', 'bob@x'], { 'alice@x': 'ja', 'bob@x': 'jb' }, []))
+      .toEqual({ accountIds: ['bob@x'], ambiguous: false });
   });
 
   describe('with two logins on different servers that share a JMAP account id', () => {
