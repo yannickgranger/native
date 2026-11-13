@@ -84,13 +84,13 @@ class BulwarkUnifiedPushService : PushService() {
         // and foreground handler can stay transport-blind.
         fun parsePayload(content: ByteArray): Map<String, String>? = try {
             val json = JSONObject(String(content, Charsets.UTF_8))
-            buildMap {
-                json.optString("kind").takeIf { it.isNotEmpty() }?.let { put("kind", it) }
-                json.optString("accountLabel").takeIf { it.isNotEmpty() }?.let { put("accountLabel", it) }
-                json.optString("accountId").takeIf { it.isNotEmpty() }?.let { put("accountId", it) }
-                put("emailIds", (json.optJSONArray("emailIds") ?: JSONArray()).toString())
-                put("changed", (json.optJSONObject("changed") ?: JSONObject()).toString())
-            }
+            RelayPushData.of(
+                kind = json.optString("kind"),
+                accountLabel = json.optString("accountLabel"),
+                accountId = json.optString("accountId"),
+                emailIds = (json.optJSONArray("emailIds") ?: JSONArray()).toString(),
+                changed = (json.optJSONObject("changed") ?: JSONObject()).toString(),
+            )
         } catch (_: Exception) {
             null
         }

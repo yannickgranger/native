@@ -21,6 +21,7 @@
   <uses-permission android:name="android.permission.READ_SYNC_SETTINGS"/>
   <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS"/>
   <uses-permission android:name="android.permission.READ_SYNC_STATS"/>
+  <!-- The direct connection (BulwarkDirectPushService) is declared by the github flavor only. -->
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>

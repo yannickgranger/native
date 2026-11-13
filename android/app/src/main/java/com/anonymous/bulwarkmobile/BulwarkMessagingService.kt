@@ -50,9 +50,10 @@ class BulwarkMessagingService : FirebaseMessagingService() {
         private const val START_WAKE_LOCK_MS = 10_000L
 
         /**
-         * What FCM and UnifiedPush do with a push: contact and calendar
-         * changes become syncs of the Android accounts they feed (device
-         * sync, #34); only mail needs the push task.
+         * What every transport (FCM, UnifiedPush, the direct connection) does
+         * with a push: contact and calendar changes become syncs of the
+         * Android accounts they feed (device sync, #34); only mail needs the
+         * push task.
          */
         fun handlePush(context: Context, data: Map<String, String>) {
             val mail = DeviceSyncPushRouter.route(context, data)

@@ -3,4 +3,25 @@
        installer (src/lib/install-update.ts). Only the sideloaded GitHub build
        updates itself; the Play build is updated by Play. -->
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+  <!-- The direct connection: the mail server's event stream kept open by a
+       foreground service. Only the GitHub build has it: Play reviews a
+       special-use foreground service. The JS hides the choice in the Play
+       build (src/lib/platform-capabilities). -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+  <application>
+    <!-- specialUse: dataSync is limited to 6 hours a day since Android 15. -->
+    <service android:name=".BulwarkDirectPushService" android:exported="false" android:foregroundServiceType="specialUse">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Keeps the user's own mail server connection (JMAP event stream) open to notify of new mail without Google services or a third-party push service"/>
+    </service>
+    <!-- Off until the direct connection is turned on (DirectPushSettings). -->
+    <receiver android:name=".BulwarkDirectPushReceiver" android:exported="false" android:enabled="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+      </intent-filter>
+    </receiver>
+  </application>
 </manifest>
