@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { jmapClient, type StoredCredentials } from '../api/jmap-client';
+import { AuthenticationError, jmapClient, type StoredCredentials } from '../api/jmap-client';
 import { CAPABILITIES } from '../api/types';
 import type { Email, JMAPMethodCall, JMAPSession, Mailbox } from '../api/types';
 import { detectDeviceLocale, isSupportedLocale, translate, type LocaleCode } from '../i18n';
@@ -15,6 +15,12 @@ import {
   getFaviconDomain,
   getFaviconUrl,
 } from './avatar-utils';
+import {
+  EMPTY_NOTIFICATION_MUTES,
+  isMailboxMuted,
+  normalizeNotificationMutes,
+  type NotificationMutes,
+} from './notification-mutes';
 import { singleLine } from './single-line';
 import { cleanPreview } from './preview-text';
 import { makeKeyedLane } from './lane';
@@ -26,6 +32,7 @@ import {
   pushSubscriptionNeedsExtension,
   pushWithoutContentFor,
   accountMatchesPushLabel,
+  knownPushTransport,
   readPushAccountIds,
   readPushJmapAccountIds,
   recordPushSubscriptionExpires,
@@ -61,6 +68,7 @@ interface PushPersistedSettings {
   emailNotificationsEnabled?: boolean;
   senderFavicons?: boolean;
   deleteAction?: string;
+  notificationMutes?: unknown;
 }
 
 /** What the settings store persisted, or nothing on first launch and when unreadable. */
@@ -74,7 +82,7 @@ async function readPersistedSettings(): Promise<PushPersistedSettings> {
 }
 
 // On by default, also when unreadable.
-async function emailNotificationsAllowed(): Promise<boolean> {
+export async function emailNotificationsAllowed(): Promise<boolean> {
   return (await readPersistedSettings()).emailNotificationsEnabled !== false;
 }
 
@@ -329,7 +337,7 @@ function originOf(url: string): string | null {
   return m ? m[1] : null;
 }
 
-// Same intent as JMAPClient.rewriteSessionUrls: point the advertised apiUrl at
+// Same intent as rewriteSessionUrls in api/jmap-client: point the advertised apiUrl at
 // the origin we actually connected to (servers often self-report unreachable
 // container-internal hosts).
 function rewriteApiUrl(session: JMAPSession, serverUrl: string): string {
@@ -368,7 +376,18 @@ async function fetchInTime(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
-async function openDetachedSession(accountId: string): Promise<DetachedSession | null> {
+/**
+ * The account's session, read with its stored credentials (an OAuth token
+ * refreshed first through the guarded path), or null when it is signed out.
+ * Throws AuthenticationError when the server refuses the credentials (a
+ * changed password, a revoked token).
+ */
+export async function fetchDetachedSession(accountId: string): Promise<{
+  creds: StoredCredentials;
+  baseUrl: string;
+  authHeader: string;
+  session: JMAPSession;
+} | null> {
   let creds = await jmapClient.getStoredCredentials(accountId);
   if (!creds) return null;
   creds = await freshStoredCredentials(accountId, creds);
@@ -377,8 +396,15 @@ async function openDetachedSession(accountId: string): Promise<DetachedSession |
   const res = await fetchInTime(`${baseUrl}/.well-known/jmap`, {
     headers: { Authorization: authHeader, Accept: 'application/json' },
   });
+  if (res.status === 401 || res.status === 403) throw new AuthenticationError(`Session discovery failed: ${res.status}`);
   if (!res.ok) throw new Error(`Session discovery failed: ${res.status}`);
-  const session = (await res.json()) as JMAPSession;
+  return { creds, baseUrl, authHeader, session: (await res.json()) as JMAPSession };
+}
+
+async function openDetachedSession(accountId: string): Promise<DetachedSession | null> {
+  const discovered = await fetchDetachedSession(accountId);
+  if (!discovered) return null;
+  const { baseUrl, authHeader, session } = discovered;
   const jmapAccountId =
     session.primaryAccounts?.[CAPABILITIES.MAIL]
     || session.primaryAccounts?.[CAPABILITIES.CORE]
@@ -456,17 +482,20 @@ export function answerHasTrash(responses: Array<[string, Record<string, any>, st
   return Array.isArray(list) && list.some((m: Mailbox) => m?.role === 'trash');
 }
 
+/** The newest unread mail of the account's Inbox, newest first, and whether `mutes` silence that Inbox. */
 async function detachedNewestUnreadInboxIds(
   session: DetachedSession,
   limit: number,
-): Promise<string[]> {
+  mutes: NotificationMutes,
+): Promise<{ ids: string[]; muted: boolean }> {
   const accountId = session.jmapAccountId;
   const mailboxResponses = await jmapPost(session, [
     ['Mailbox/get', { accountId, properties: ['id', 'role'] }, '0'],
   ]);
   const mbBody = methodResult(mailboxResponses, 'Mailbox/get');
   const inbox = ((mbBody.list as Mailbox[]) ?? []).find((m) => m.role === 'inbox');
-  if (!inbox) return [];
+  if (!inbox) return { ids: [], muted: false };
+  const muted = isMailboxMuted(mutes, accountId, inbox.id);
   const queryResponses = await jmapPost(session, [
     [
       'Email/query',
@@ -480,7 +509,7 @@ async function detachedNewestUnreadInboxIds(
     ],
   ]);
   const qBody = methodResult(queryResponses, 'Email/query');
-  return (qBody.ids as string[]) ?? [];
+  return { ids: (qBody.ids as string[]) ?? [], muted };
 }
 
 // Types that may mean new mail: `EmailDelivery`, and `Email`/`Mailbox`, which
@@ -555,6 +584,45 @@ export async function pushBackgroundTask(data: unknown): Promise<void> {
       error instanceof Error ? error.message : error,
     );
   }
+}
+
+/**
+ * Records the account's newest unread Inbox mail as notified, as many as the
+ * notified ids hold: for an account notifying resumes for over the direct
+ * connection (syncDirectPush), whose ring holds none of the mail already
+ * there. A push without message ids looks at the newest few not notified, so
+ * any fewer would let older unread mail surface once the newest is read
+ * elsewhere.
+ */
+export async function rememberUnreadInboxMail(accountId: string): Promise<void> {
+  const session = await openDetachedSession(accountId);
+  if (!session) return;
+  await notifiedIdsLane(accountId, async () => {
+    const { ids } = await detachedNewestUnreadInboxIds(session, NOTIFIED_IDS_LIMIT, EMPTY_NOTIFICATION_MUTES);
+    if (ids.length > 0) await rememberNotifiedIds(accountId, ids);
+  });
+}
+
+/**
+ * The direct connection's pushes name no message, so each notifies the newest
+ * unread Inbox mail not notified before (notifyForPush). Mail the app showed
+ * in the account's own Inbox (`inboxId`) while in front counts as notified:
+ * it is recorded here, as many as such a push looks at. Rows of a list that
+ * spans accounts carry their account and are left out, as is any row not in
+ * that Inbox: their ids are another folder's or another account's.
+ */
+export async function rememberShownInboxMail(accountId: string, inboxId: string, emails: Email[]): Promise<void> {
+  // Runs on every change of the list: no storage read once the transport is known.
+  if ((await knownPushTransport()) !== 'direct') return;
+  const inInbox = emails.filter((e) => !e.jmapAccountId && e.mailboxIds?.[inboxId]);
+  const newest = selectNotifiableEmails(inInbox, [])
+    .sort((a, b) => new Date(b.receivedAt ?? 0).getTime() - new Date(a.receivedAt ?? 0).getTime())
+    .slice(0, LEGACY_QUERY_LIMIT);
+  await notifiedIdsLane(accountId, async () => {
+    const notified = await readNotifiedIds(accountId);
+    const fresh = newest.filter((e) => !notified.includes(e.id));
+    if (fresh.length > 0) await rememberNotifiedIds(accountId, fresh.map((e) => e.id));
+  });
 }
 
 /** Messages worth a notification: unread, not junk, not shown before. */
@@ -639,9 +707,20 @@ async function notifyForPush(accountId: string, session: DetachedSession, payloa
     // unread inbox messages and notify the ones not shown before. The ring
     // of notified ids (rather than a single "last" id) is what keeps a
     // message read elsewhere from surfacing the next older one.
-    const ids = await detachedNewestUnreadInboxIds(session, LEGACY_QUERY_LIMIT);
+    // Over the direct connection mutes are the app's to honour: a muted
+    // Inbox's new mail is recorded as notified instead, so lifting the mute
+    // announces none of what came while it was on, as a relay's server-side
+    // filter never sends it. A relay's pushes are left as they come.
+    const mutes = (await knownPushTransport()) === 'direct'
+      ? normalizeNotificationMutes((await readPersistedSettings()).notificationMutes)
+      : EMPTY_NOTIFICATION_MUTES;
+    const { ids, muted } = await detachedNewestUnreadInboxIds(session, LEGACY_QUERY_LIMIT, mutes);
     const fresh = ids.filter((id) => !alreadyNotified.includes(id));
     if (fresh.length === 0) return;
+    if (muted) {
+      await rememberNotifiedIds(accountId, fresh);
+      return;
+    }
     ({ emails: candidates, hasTrash } = await detachedGetEmails(session, session.jmapAccountId, fresh, properties));
   }
 

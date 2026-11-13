@@ -33,3 +33,21 @@ describe('supportsSideloadUpdates', () => {
     expect(caps.supportsSideloadUpdates).toBe(false);
   });
 });
+
+describe('the direct connection', () => {
+  const native = { BulwarkDirectPush: { start: async () => undefined, stop: async () => undefined, setAccounts: async () => undefined } };
+
+  it('is offered by the GitHub build, which holds its service', async () => {
+    await load('android', { ...native, BulwarkBuild: { distribution: 'github' } });
+    const { isDirectPushSupported, getDirectPushNative } = await import('../direct-push');
+    expect(isDirectPushSupported()).toBe(true);
+    expect(getDirectPushNative()).not.toBeNull();
+  });
+
+  it('is not offered by the Play build, which holds no service, although the module is there', async () => {
+    await load('android', { ...native, BulwarkBuild: { distribution: 'play' } });
+    const { isDirectPushSupported, getDirectPushNative } = await import('../direct-push');
+    expect(isDirectPushSupported()).toBe(false);
+    expect(getDirectPushNative()).toBeNull();
+  });
+});

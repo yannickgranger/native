@@ -12,7 +12,7 @@ export type StateChangeHandler = (change: StateChange) => void;
 // per-account `emailPush` delivery filter. Older servers reject the capability
 // in `using` and the property outright, so every call that touches it gates
 // on the session advertising the capability.
-function hasEmailPushCapability(client: JMAPClient = jmapClient): boolean {
+function hasEmailPushCapability(client: JMAPClient): boolean {
   return client.hasCapability(CAPABILITIES.EMAIL_PUSH);
 }
 
@@ -60,17 +60,17 @@ export async function createPushSubscription(params: {
   // draft-ietf-jmap-emailpush delivery filter, only when the server advertises
   // urn:ietf:params:jmap:emailpush (see serverSupportsEmailPush).
   emailPush?: Record<string, EmailPushConfig>;
-}): Promise<{ id: string; expires: string | null }> {
+}, client: JMAPClient = jmapClient): Promise<{ id: string; expires: string | null }> {
   const created: Record<string, unknown> = {
     deviceClientId: params.deviceClientId,
     url: params.url,
     types: params.types,
   };
   if (params.expires) created.expires = params.expires;
-  const withEmailPush = !!params.emailPush && hasEmailPushCapability();
+  const withEmailPush = !!params.emailPush && hasEmailPushCapability(client);
   if (withEmailPush) created.emailPush = params.emailPush;
 
-  const res = await jmapClient.request(
+  const res = await client.request(
     [
       [
         'PushSubscription/set',
@@ -102,11 +102,12 @@ export async function createPushSubscription(params: {
 export async function updatePushSubscription(
   id: string,
   patch: { expires?: string; types?: string[]; emailPush?: Record<string, EmailPushConfig> },
+  client: JMAPClient = jmapClient,
 ): Promise<void> {
-  const withEmailPush = patch.emailPush !== undefined && hasEmailPushCapability();
+  const withEmailPush = patch.emailPush !== undefined && hasEmailPushCapability(client);
   const update: Record<string, unknown> = { ...patch };
   if (!withEmailPush) delete update.emailPush;
-  const res = await jmapClient.request(
+  const res = await client.request(
     [
       [
         'PushSubscription/set',
@@ -130,8 +131,9 @@ export async function updatePushSubscription(
 export async function verifyPushSubscription(
   id: string,
   verificationCode: string,
+  client: JMAPClient = jmapClient,
 ): Promise<void> {
-  const res = await jmapClient.request(
+  const res = await client.request(
     [
       [
         'PushSubscription/set',

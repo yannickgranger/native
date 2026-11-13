@@ -35,3 +35,16 @@ export const supportsSideloadUpdates = Platform.OS === 'android' && androidDistr
  * failing.
  */
 export const supportsDeviceSync = Platform.OS === 'android';
+
+/**
+ * New-mail notifications over the direct connection: a foreground service of
+ * the special-use type keeps a stream open to each mail server
+ * (`lib/direct-push`).
+ *
+ * Only the GitHub build on Android: Google Play asks a declaration of a
+ * special-use foreground service and reviews it, so the Play build ships
+ * without the service, its boot receiver and their permissions
+ * (android/app/src/github/AndroidManifest.xml). The delivery choice is hidden
+ * when this is false.
+ */
+export const supportsDirectPush = Platform.OS === 'android' && androidDistribution === 'github';
